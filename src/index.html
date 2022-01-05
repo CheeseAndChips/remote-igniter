@@ -100,173 +100,192 @@
     </div>
 
     <script>
-        var polling;
-        var connected = false;
-
-        var timeLeft = 0;
-        var counting = false;
-
-        let updateCounting = function(val) {
-            counting = val;
-            updateButton();
+        var formatTime = function(t) {
+            if(t) return t.toFixed(1) + ' s';
+            else return '';
         }
 
-        let formatTime = function(t) {
-            return (t / 1000).toFixed(1) + ' s';
+        var eid = function(i) { return document.getElementById(i); }
+
+        var state = {
+            _hidden_states: {
+                counting: false,
+                timeLeft: null,
+                timeLeftConfirmed: null,
+                timerInterval: null,
+            },
+            connections: {
+                connection_status: false,
+                heater_status: false,
+                relay_status: false,
+                switch_status: false,
+            },
+            set ping(val) {
+                eid('ping').innerHTML = (val) ? '(' + val + ' ms)' : '';
+            },
+            get timeLeft() {
+                return this._hidden_states.timeLeft;
+            },
+            set timeLeft(val) {
+                this._hidden_states.timeLeft = val;
+                eid('timeLeft').innerHTML = formatTime(this.timeLeft);
+            },
+            get timeLeftConfirmed() {
+                return this._hidden_states.timeLeftConfirmed;
+            },
+            set timeLeftConfirmed(val) {
+                this._hidden_states.timeLeftConfirmed = val;
+                this.timeLeft = val;
+                eid('realTimeLeft').innerHTML = formatTime(this.timeLeft);
+            },
+            get readyToFire() {
+                for(var i in this.connections) {
+                    if(!this.connections[i]) return false;
+                }
+                return true;
+            },
+            get connected() {
+                return this.connections.connection_status;
+            },
+            set connected(val) {
+                this.changeConnection('connection_status', val);
+                this._hidden_states.connection_status = val;
+                if(!val) {
+                    this.resetStates();
+                }
+            },
+            get counting() {
+                return this._hidden_states.counting;
+            },
+            set counting(val) {
+                if(this.counting === val) return;
+                this._hidden_states.counting = val;
+                
+                if(val && !this._hidden_states.timerInterval) {
+                    this._hidden_states.timerInterval = setInterval(function() {
+                        state.timeLeft -= 0.1;
+                    }, 100);
+                }else if(this._hidden_states.timerInterval != null) {
+                    clearInterval(this._hidden_states.timerInterval);
+                    this._hidden_states.timerInterval = null;
+                }
+
+                eid('fire').innerHTML = this.counting ? 'Atšaukt' : 'Degam';
+                this.updateButtonReadyNotReady();
+            },
+            updateButtonReadyNotReady: function() {
+                let state = this.counting | this.readyToFire;
+                eid('fire').setAttribute('state', state ? 'ready' : 'not-ready');
+            },
+            changeConnection: function(name, state) {
+                this.connections[name] = state;
+                state = (state) ? 1 : 0;
+                var states = [['nc', 'nepajungta'], ['sc', 'pajungta']];
+                let elem = eid(name.replace('_', '-'));
+                elem.className = states[state][0];
+                elem.innerHTML = states[state][1];
+
+                this.updateButtonReadyNotReady();
+            },
+            resetStates: function() {
+                for(var i in this.connections) {
+                    this.changeConnection(i.replace('-', '_'), false);
+                }
+                this.ping = null;
+            }
+        };
+
+        let apiCall = function(url, onload, onerror=null, ontimeout=null, timeout=1000) {
+            let req = new XMLHttpRequest();
+            req.open('GET', url, true);
+            req.timeout = timeout;
+
+            req.onload = function() {
+                onload(req);
+            }
+
+            if(onerror) {
+                req.onerror = function() {
+                    onerror(req);
+                }
+            }else req.onerror = function() { alert('Request error'); }
+
+            if(ontimeout){
+                req.ontimeout = function() {
+                    ontimeout(req);
+                }
+            }else req.ontimeout = function() { alert('Request timeout'); }
+
+            req.send();
         }
 
-        changeState = function(elem, state) {
-            var states = [['nc', 'nepajungta'], ['sc', 'pajungta']];
-            if(typeof(elem) === 'string') { elem = document.getElementById(elem); }
-            if(typeof(state) === 'boolean') { state = (state) ? 1 : 0; }
-            elem.className = states[state][0];
-            elem.innerText = states[state][1];
-        };
+        let startIgnition = function(delay, length) {
+            if(!state.connected) { alert('Nera pingo'); return; }
+            if(!state.readyToFire) { if(!confirm('Ne visi dalykai pajungti, ar tikrai nori degint?')) return; }
 
-        let changeButtonState = function(st) {
-            document.getElementById('fire').setAttribute('state', st ? 'ready' : 'not-ready');
-        };
-
-        let startCountdown = function(delay) {
-            updateCounting(true);
-            timeLeft = delay * 1000;
-
-            let update = function() {
-                document.getElementById('timeLeft').innerHTML = formatTime(timeLeft);
-            };
-
-            update();
-
-            let subtractInterval = setInterval(function() {
-                if(!counting) {
-                    clearInterval(subtractInterval);
-                    document.getElementById('timeLeft').innerHTML = '';
-                    return;
+            apiCall(
+                '/fire?delay=' + delay + '&length=' + length,
+                function(req) {
+                    let txt = req.responseText;
+                    if(txt !== "ok") alert("Gavau response: " + txt);
+                    state.timeLeft = delay;
+                    state.counting = true;
                 }
-                timeLeft -= 100;
-                update();
-            }, 100);
-        };
+            );
+        }
 
-        let resetAllStates = function() {
-            document.getElementById('ping').innerText = '';
-            changeState('connection-status', false);
-            changeState('heater-status', false);
-            changeState('relay-status', false);
-            changeState('switch-status', false);
-            changeButtonState(false);
-            connected = false;
-        };
+        let cancelIgnition = function() {
+            apiCall('/cancel', function(res) {
+                let txt = res.responseText;
+                if(txt !== "ok") alert('Gavau response: ' + txt); 
+                else state.counting = false;
+            });
+        }
 
-        let updateButton = function() {
-            let btn = document.getElementById('fire');
-            if(!counting) {
-                btn.innerHTML = 'Degam';
-                btn.onclick = function() {
-                    if(!connected) { alert('Nera pingo'); return; }
-                    if(this.getAttribute('state') === 'not-ready')
-                    {
-                        let x = confirm('Ne visi dalykai pajungti, ar tikrai nori degint?');
-                        if(!x) return;
-                    }
-        
-                    let delay = parseInt(document.getElementById('delay').value);
-                    let length = parseInt(document.getElementById('length').value);
-        
-                    if(delay < 0 || length < 0) { alert('Neigiamas skaicius'); return; }
-        
-                    let req = new XMLHttpRequest();
-                    req.open('GET', '/fire?delay=' + delay + '&length=' + length, true);
-                    req.timeout = 1000;
-        
-                    req.onload = function() {
-                        let resp = req.responseText;
-                        startCountdown(delay);
-                        if(resp !== 'ok') alert('bad resp: ' + resp);
-                    }
-        
-                    let handleerror = function() {
-                        alert('Nepasijungiau kazkodel');
-                    }
-        
-                    req.send();
-                }
+        eid('fire').onclick = function() {
+            if(state.counting) {
+                cancelIgnition();
             } else {
-                btn.innerHTML = 'Atšaukt';
-                btn.onclick = function() {
-                    if(!connected) { alert('Nera pingo'); return; }
-        
-                    let req = new XMLHttpRequest();
-                    req.open('GET', '/cancel', true);
-                    req.timeout = 1000;
-        
-                    req.onload = function() {
-                        let resp = req.responseText;
-                        if(resp !== 'ok') alert('bad resp: ' + resp);
-                        else {
-                            updateCounting(false);
-                            updateButton();
-                        }
-                    }
-        
-                    let handleerror = function() {
-                        alert('nepasijungiau kazkodel');
-                    }
-        
-                    req.send();
-                }
+                let delay = parseInt(eid('delay').value);
+                let length = parseInt(eid('length').value);
+
+                if(delay < 0 || length < 0) { alert('Neigiamas skaicius'); return; }
+                startIgnition(delay, length);
             }
         }
 
         document.body.onload = function() {
-            resetAllStates();
-            updateButton();
+            state.connected = false;
 
-            polling = setInterval(function() {
-                let req = new XMLHttpRequest();
-                req.open('GET', '/ping', true);
-                req.timeout = 500;
+            var polling = setInterval(function() {
+                let start = performance.now();
+                apiCall(
+                    '/ping',
+                    function(req) {
+                        state.ping = performance.now() - start;
 
-                req.onload = function() {
-                    let time = performance.now() - start;
+                        let splitup = req.responseText.split(';');
+                        if(splitup.length > 1) {
+                            state.counting = true;
+                            state.timeLeftConfirmed = parseInt(splitup[1]) / 1000;
+                        } else {
+                            state.counting = false;
+                            state.timeLeftConfirmed = null;
+                        }
 
-                    let splitup = req.responseText.split(';');
-                    if(splitup.length > 1) {
-                        updateCounting(true);
-                        timeLeft = parseInt(splitup[1]);
-                        document.getElementById('realTimeLeft').innerHTML = formatTime(splitup[1]);
-                    }else{
-                        updateCounting(false);
-                        document.getElementById('realTimeLeft').innerHTML = '';
-                    }
-
-                    let state_names = ['switch', 'relay', 'heater'];
-
-                    let states = {};
-                    let all_true = true;
-                    for(let i = 0; i < state_names.length; i++){
-                        let cstate = req.responseText[i] === '1';
-                        states[state_names[i]] = cstate;
-                        all_true &= cstate;
-                    }
-
-                    changeState('connection-status', true);
-                    changeState('heater-status', states['heater']);
-                    changeState('relay-status', states['relay']);
-                    changeState('switch-status', states['switch']);
-
-                    connected = true;
-                    changeButtonState(all_true);
-
-                    document.getElementById('ping').innerText = '(' + time + ' ms)';
-                };
-
-                req.onerror = resetAllStates;
-                req.ontimeout = resetAllStates;
-
-                var start = performance.now();
-                
-                req.send();
+                        state.connected = true;
+                        let state_names = ['switch_status', 'relay_status', 'heater_status'];
+                        let all_true = true;
+                        for(let i = 0; i < state_names.length; i++) {
+                            let cstate = req.responseText[i] === '1';
+                            state.changeConnection(state_names[i], cstate);
+                            all_true &= cstate;
+                        }
+                    },
+                    function() { state.connected = false; },
+                    function() { state.connected = false; },
+                    500,
+                );
             }, 1000);
         };
     </script>
