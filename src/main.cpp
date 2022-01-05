@@ -4,7 +4,7 @@
 #include <ESP8266WebServer.h>
 #include "web_include.h"
 
-#define DEBUG
+//#define DEBUG
 #ifdef DEBUG
 #define DEBUG_NO_AP
 
@@ -148,6 +148,7 @@ void handlePing() {
 void handleFire() {
 	if(!server.hasArg("delay") || !server.hasArg("length")){
 		server.send(400, "text/html", "Nera delay arba length");
+		return;
 	}
 
 	String delayStr = server.arg("delay");
@@ -155,6 +156,7 @@ void handleFire() {
 
 	if(!verifyString(delayStr) || !verifyString(lengthStr)){
 		server.send(400, "text/html", "Delay arba length nera skaiciai");
+		return;
 	}
 
 	int delay = delayStr.toInt();
